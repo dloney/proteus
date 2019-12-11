@@ -1426,6 +1426,10 @@ cdef class ProtChSystem:
         self.initialised = False
         self.update_substeps = False
 
+        # Set the chrono logging values
+        self.log_bodies = None
+        self.log_springs = None
+
     def setTimeStep(self, double dt):
         """Sets time step for Chrono solver.
         Calculations in Chrono will use this time step within the
@@ -1529,6 +1533,8 @@ cdef class ProtChSystem:
             Manually sets a time step. The time step is set
             automatically when coupled with a Proteus simulation
         """
+
+        # Handle the chrono timestepping behavior within the Proteus solution
         self.proteus_dt_last = self.proteus_dt
         if self.model is not None:
             try:
@@ -1544,21 +1550,43 @@ cdef class ProtChSystem:
             self.t = t = self.ChSystem.GetChTime()
         else:
             sys.exit('ProtChSystem: no time step set in calculate()')
+
+        # Construct the mooring line input. This is used when the contact physics method is used to model a discrete
+        # mooring line with a collar
         if self.model is not None:
             if self.build_kdtree is True:
                 Profiling.logEvent("Building k-d tree for mooring nodes lookup")
                 self.nodes_kdtree = spatial.cKDTree(self.model.levelModelList[-1].mesh.nodeArray)
+
+        # Update the sampling rate
         if t >= self.next_sample:
             self.record_values = True
             self.next_sample += self.sampleRate
-        import time
+
+        # Do the chrono prestep
         Profiling.logEvent("Chrono prestep")
         for s in self.subcomponents:
             s.prestep()
+
+        # Solve the step
         self.step(self.proteus_dt)
+
+        # Create the chrono logs
+        # Log to the profiler
         Profiling.logEvent("Chrono poststep")
+
+        # Log the chrono phyics of interest
+        if self.log_bodies:
+            _log_chrono_body(self.t + self.proteus_dt, self.log_bodies)
+
+        if self.log_springs:
+            _log_chrono_spring(self.t + self.proteus_dt, self.log_springs)
+
+        # Do the chrono post step
         for s in self.subcomponents:
             s.poststep()
+
+        # Output final variables before exiting the iteration
         self.record_values = False
         self.first_step = False  # first step passed
         self.tCount += 1
@@ -1831,6 +1859,83 @@ cdef class ProtChSystem:
 
     def setCollisionEnvelopeMargin(self, double envelope, double margin):
         self.thisptr.setCollisionEnvelopeMargin(envelope, margin)
+
+    def log_chrono_body(self, d_time, l_logging_info):
+        """
+        Logs the chrono information into a file at each timestep
+
+        """
+        # todo: doc string
+
+        # Open the file
+        s_filename = 'chrono_log_body.txt'
+        o_file = open(s_filename, 'a+')
+
+        # Loop and write the body information
+        for i_entry_body in range(0, len(l_logging_info), 1):
+            # Extract the coordinate positions
+            o_body = self.subcomponents[l_logging_info[i_entry_body][0]].ChBody
+
+            if l_logging_info[i_entry_body][1] == 'position':
+                o_body_position = o_body.GetPos()
+
+                o_file.write(str(d_time) + '\t' + 'position' + '\t' +
+                             str(l_logging_info[i_entry_body][0]) + '\t' + str(o_body_position.x) + '\t' +
+                             str(o_body_position.y) + '\t' +  str(o_body_position.z) +'\n')
+
+            elif l_logging_info[i_entry_body][1] == 'rotation':
+                o_body_rotation = o_body.GetRot()
+
+                o_file.write(str(d_time) + '\t' + 'rotation' + '\t' +
+                             str(l_logging_info[i_entry_body][0]) + '\t' + str(o_body_rotation.e0) + '\t' +
+                             str(o_body_rotation.e1) + '\t' + str(o_body_rotation.e2) + '\t' + str(o_body_rotation.e3) +
+                             '\n')
+
+            elif l_logging_info[i_entry_body][1] == 'force':
+                o_body_force = o_body.Get_XForce()
+
+                o_file.write(str(d_time) + '\t' + 'force' + '\t' +
+                             str(l_logging_info[i_entry_body][0]) + '\t' + str(o_body_force.x) + '\t' +
+                             str(o_body_force.y) + '\t' + str(o_body_force.z) + '\n')
+
+            elif l_logging_info[i_entry_body][1] == 'torque':
+                o_body_torque = o_body.Get_Xtorque()
+
+                o_file.write(str(d_time) + '\t' + 'torque' + '\t' +
+                             str(l_logging_info[i_entry_body][0]) + '\t' + str(o_body_torque.x) + '\t' +
+                             str(o_body_torque.y) + '\t' + str(o_body_torque.z) + '\n')
+
+            else:
+                raise NotImplementedError('Chrono body log not understood.')
+
+        # Close the log file
+        o_file.close()
+
+    def log_chrono_spring(self, d_time, l_springs):
+        """
+        Logs the chrono information into a file at each timestep
+
+        """
+        # todo: doc string
+
+        # Open the file
+        s_filename = 'chrono_log_spring.txt'
+        o_file = open(s_filename, 'a+')
+
+        # Loop and write the body information
+        for i_entry_spring in range(0, len(l_springs), 1):
+            # Get the current state of the spring
+            d_internal_force = l_springs[i_entry_spring].GetSpringReact()
+            d_spring_velocity = l_springs[i_entry_spring].GetSpringVelocity()
+            d_spring_length = l_springs[i_entry_spring].GetSpringLength()
+
+            # Write to the file
+            o_file.write(str(d_time) + '\t' + str(i_entry_spring) + '\t' + str(d_internal_force) + '\t' +
+                         str(d_spring_velocity) + '\t' + str(d_spring_length) + '\n')
+
+        # Close the output file
+        o_file.close()
+
 
     # def findFluidVelocityAtCoords(self, coords):
     #     """Finds solution from NS for velocity of fluid at given coordinates
